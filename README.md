@@ -18,6 +18,7 @@ magick to determine the page's structure. So far, my script can detect and locat
 
 Ain't it grand?
 
+![](https://github.com/chadoliver/structor/raw/gh-pages/analysed.jpg)
 
 Dependencies
 ============
