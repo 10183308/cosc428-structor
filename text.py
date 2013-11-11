@@ -6,361 +6,177 @@ import colors
 import geometry as g
 from box import Box
 from dimension import Dimension
+from scipy import spatial
 
-class AbstractLineCollection:
+def threshold(image, threshold=colors.greyscale.MID_GREY, method=cv2.THRESH_BINARY_INV):
+    retval, dst = cv2.threshold(image, threshold, colors.greyscale.WHITE, method)
+    return dst
 
-    def __init__(self, lines=[]):
-        self.lines = lines
-        self.update()
+class Character:
 
-    def append(self, line):
+    def __init__(self, x, y):
 
-        self.lines.append(line)
-        self.update()
+        self.coordinate = [x, y]
+        self.x = x
+        self.y = y
 
-    def extend(self, lines):
+        self.nearestNeighbours = []
+        self.parentWord = None
 
-        for line in lines:
-            self.append(line)
+    def assignParentWord(self, word):
 
-    def peekStart(self, num=1):
-        if num == 1:
-            return self.lines[0]
-        else:
-            return self.lines[:num]
+        self.parentWord = word
+        self.parentWord.registerChildCharacter(self)
 
-    def pull(self, num=1):
+        for neighbour in self.nearestNeighbours:
+            if neighbour.parentWord == None:
+                neighbour.assignParentWord(self.parentWord)
 
-        first = self.lines[:num]
-        self.lines = self.lines[num:]
-        if num == 1:
-            return first[0] #unwrap
-        else:
-            return first
-
-    def pop(self):
-        return self.lines.pop()
-
-    def __getitem__(self, val):
-        return self.lines.__getitem__(val)
+    def toArray(self):
+        return self.coordinate
 
     def __len__(self):
-        return self.lines.__len__()
+        return len(self.coordinate)
 
-    def paint(self, image, color):
+    def __getitem__(self, key):
+        return self.coordinate.__getitem__(key)
 
-        try:
-            print "page skew: %f" %self.avgAngle.degrees()
-        except AttributeError:
-            pass
+    def __setitem__(self, key, value):
+        self.coordinate.__setitem__(key, value)
 
-        for line in self.lines:
-            image = line.paint(image, color)
+    def __delitem__(self, key):
+        self.coordinate.__delitem__(key)
 
+    def __iter__(self):
+        return self.coordinate.__iter__()
+
+    def __contains__(self, item):
+        return self.coordinate.__contains__(item)
+
+    def paint(self, image, color=colors.YELLOW):
+
+        pointObj = g.Point(self.coordinate)
+        image = pointObj.paint(image, color)
         return image
 
+class CharacterSet:
 
+    def __init__(self, sourceImage):
 
-class FragmentCollection(AbstractLineCollection):
+        self.characters = self.getCharacters(sourceImage)
+        self.NNTree = spatial.KDTree([char.toArray() for char in self.characters])
 
-    def __init__(self, lines=[]):
-        AbstractLineCollection.__init__(self, lines)
+    def getCharacters(self, sourceImage):
 
-    def __reversed__(self):
-        return FragmentCollection(reversed(self.lines))
+        characters = []
 
-    def update(self):
+        image = sourceImage.copy()
+        image = threshold(image)
+        image = threshold(image, cv2.THRESH_OTSU, method=cv2.THRESH_BINARY)
 
-        # sort lines by the y-position of the first word in each line
-        yPosition = lambda line: line.words[0].center[1]
-        self.lines = sorted(self.lines, key=yPosition)
+        if False:
+            self.display(image)
 
-class LineCollection(AbstractLineCollection):
+        for contour in self.getContours(image):
+            try:
+                box = Box(contour)
 
-    def __init__(self, lines=[]):
-        AbstractLineCollection.__init__(self, lines)
+                moments = cv2.moments(contour)
+                centroidX = int( moments['m10'] / moments['m00'] )
+                centroidY = int( moments['m01'] / moments['m00'] )
+                character = Character(centroidX, centroidY)
+                
+            except ZeroDivisionError:
+                continue
+                
+            if box.area > 50:
+                characters.append(character)
 
-    def __reversed__(self):
-        return LineCollection(reversed(self.lines))
+        return characters
 
-    def update(self):
+    def getContours(self, sourceImage, threshold=-1):
 
-        # calculate the average angle of all lines
-        self.avgAngle = g.Angle(0)
-        angles = [line.angle for line in self.lines if line.angle != None]
-        if len(angles):
-            self.avgAngle = g.Angle.average(angles)
+        image = sourceImage.copy()
+        blobs = []
+        topLevelContours = []
 
-        # sort lines by the y-position of the first word in each line
-        yPosition = lambda line: g.Point(line.box.center.center).rotate(self.avgAngle).y
-        self.lines = sorted(self.lines, key=yPosition)
+        contours, hierarchy = cv2.findContours(image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
+        for i in range(len(hierarchy[0])):
 
-class Line:
+            if len(contours[i]) > 2:    # 1- and 2-point contours have a divide-by-zero error in calculating the center of mass.
 
-    def __init__(self, firstWord):
+                # bind each contour with its corresponding hierarchy context description.
+                obj = {'contour': contours[i], 'context': hierarchy[0][i]}
+                blobs.append(obj)
 
-        self.words = [firstWord]
-        self.angle = None
-        self.totalArea = None
-        self.avgArea = None
-        self.box = None
+        for blob in blobs:
+            parent = blob['context'][3]
+            if parent <= threshold: # no parent, therefore a root
+                topLevelContours.append(blob['contour'])
 
-        self.leftIndent = None      # distance to the left margin
-        self.rightIndent = None     # distance to the right margin
+        return topLevelContours
 
-        self.isParagraphStart = False
-        self.isParagraphEnd = False
-        self.isCentered = False
-        self.isHorizontalRule = False
+    def getWords(self):
 
-        self.exploreGraph()
-        self.update()   # sort words by horizontal position, and calculate the lines's angle, contour, and box.
+        words = []
+        
+        # find the average distance between nearest neighbours
+        NNDistances = []
+        for character in self.characters:
+            result = self.NNTree.query(character.toArray(), k=2)  # we only want nearest neighbour, but the first result will be the point matching itself.
+            nearestNeighbourDistance = result[0][1]
+            NNDistances.append(nearestNeighbourDistance)
+        avgNNDistance = sum(NNDistances)/len(NNDistances)
 
-    def exploreGraph(self):
-        # Do a depth-first search on the graph, and add any found words to the self.words list. This
-        # basically means, "All connected words are part of the same line."
+        maxDistance = avgNNDistance*2
+        k = 2
+        for character in self.characters:
+            queryResult = self.NNTree.query(character.coordinate, k=k)
+            distances = queryResult[0]
+            neighbours = queryResult[1]
+            for i in range(1,k):
+                if distances[i] < maxDistance:
+                    neighbour = self.characters[neighbours[i]]
+                    character.nearestNeighbours.append(neighbour)
 
-        # seenButNotExplored holds all words that we have discovered but which haven't been searched
-        # themselves. They might contain links to other (new) words.
-        seenButNotExplored = self.words[:]  # the [:] is to ensure that we have a separate object.
-        for word in seenButNotExplored:
-            word.isSeen = True
+        for character in self.characters:
+            if character.parentWord == None:
+                if len(character.nearestNeighbours) >= 0:
+                    word = Word([character])
+                    words.append(word)
+                    
+        return words
 
-        while len(seenButNotExplored) > 0:
+    def paint(self, image, color=colors.BLUE):
 
-            wordBeingSearched = seenButNotExplored.pop()
-            neighbours = []
-
-            neighbours.extend(wordBeingSearched.rightLinks)
-            neighbours.extend(wordBeingSearched.leftLinks)
-
-            for neighbour in neighbours:
-                if neighbour.isSeen == False:     # note that word.isSeen is always set if a word is already part of the line.
-                    neighbour.isSeen = True
-                    seenButNotExplored.append(neighbour)
-                    self.words.append(neighbour)
-                    neighbour.parentLine = self
-
-    def split(self, page):
-        # this is called if the line has a 'suspicious' height, and it should try to split the line
-        # into two (or more) separate lines.
-
-        connections = []    # each entry should be an array of the form [wordOne, wordTwo]
-        for wordOne in self.words:
-
-            neighbours = []
-            neighbours.extend(wordOne.rightLinks)
-            neighbours.extend(wordOne.leftLinks)
-
-            for wordTwo in self.words:
-                if wordOne is wordTwo:
-                    continue
-                if ([wordOne, wordTwo] in connections) or ([wordTwo, wordOne] in connections) :
-                    continue    # we don't want double-ups
-                if wordTwo in neighbours:
-                    connections.append([wordOne, wordTwo])
-
-        candidatePairs = []
-        for pair in connections:
-
-            words = self.words[:]   # [:] results in a copy of the list.
-            for word in words:
-                word.isSeen = False
-
-            pair[0].isSeen = True  # This is equivalent to an impenetrable wall in the graph search.
-            pair[1].isSeen = True
-
-            lineOne = Line(pair[0])
-            lineTwo = Line(pair[1])
-
-            if (lineOne.box.height < 55) and (lineTwo.box.height < 55):
-                return [lineOne, lineTwo]
-            else:
-                candidatePairs.append([lineOne, lineTwo])
-
-
-
-        #for pair in candidatePairs:
-
-            #boundingBox = (700,700)
-            #title = 'foo'
-            #image = page.image.copy()
-
-            #for line in pair:
-                #image = line.paint(image, colors.BURNT_YELLOW)
-
-            #if boundingBox:
-                #maxDimension = Dimension(boundingBox[0], boundingBox[1])
-                #displayDimension = Dimension(image.shape[1], image.shape[0])
-                #displayDimension.fitInside(maxDimension)
-                #image = cv2.resize(image, tuple(displayDimension))
-
-            #cv2.namedWindow(title, cv2.CV_WINDOW_AUTOSIZE)
-            #cv2.imshow(title, image)
-            #cv2.waitKey()
-
-        return [self]
-
-    def update(self):
-
-        # sort words by their x-position
-        xPosition = lambda word: word.center[0]
-        self.words = sorted(self.words, key=xPosition)
-
-        #calculate the line's angle by fitting a least-squares line to the word centers.
-        trend = g.Line(word.center for word in self.words)
-        self.angle = trend.angle
-
-        # find the Box (minAreaRect) around all the words in the line. This is different from the 'raw'
-        # boxes we started with, because the box we are creating here is designed to enclose a specific
-        # set of words (not just a guess of where the words might be).
-        points = []
-        for word in self.words:
-            for point in word.contour:
-                points.append(point)
-        points = numpy.array(points)    # This needs to have the format [ [[a,b]], [[c,d]] ]
-        self.box = Box(points)
-        self.center = self.box.center.center
-
-        self.totalArea = 0
-        for word in self.words:
-            self.totalArea += word.getArea()
-        self.avgArea = float(self.totalArea) / len(self.words)
-
-    def determineIndents(self, margin):
-
-        # All calculations are done in the 'corrected' frame of reference, hence the calls to .rotate
-
-        leftEdgeOfText = g.Point(self.box.center.left).rotate(margin.angle)
-        rightEdgeOfText = g.Point(self.box.center.right).rotate(margin.angle)
-
-        pointOnLeftMarginLine = margin.left.start.rotate(margin.angle)
-        pointOnRightMarginLine = margin.right.start.rotate(margin.angle)
-
-        leftProjection = g.Point(pointOnLeftMarginLine.x, leftEdgeOfText.y)
-        rightProjection = g.Point(pointOnRightMarginLine.x, rightEdgeOfText.y)
-
-        self.leftIndent = g.Point.distance(leftEdgeOfText, leftProjection)
-        self.rightIndent = g.Point.distance(rightEdgeOfText, rightProjection)
-
-    def setFlags(self, margin):
-
-        if 1280 < self.box.width < 1330:
-            if self.box.height < 20:
-                self.isHorizontalRule = True
-
-        if 30 < self.leftIndent < 60:
-            self.isParagraphStart = True
-        if self.rightIndent > 50:
-            self.isParagraphEnd = True
-
-        if self.leftIndent > 50 and self.rightIndent > 50:
-            difference = abs(self.leftIndent - self.rightIndent)
-            if difference < 50:
-                self.isCentered = True
-
-    def __len__(self):
-        return self.words.__len__()
-
-    def paint(self, image, color, centerLine=False, box=False):
-
-        #for word in self.words:
-        #    image = word.paint(image, colors.RED)
-
-        if centerLine:
-            start = self.box.center.left
-            end = self.box.center.right
-            image = g.Line([start, end]).paint(image, color)
-
-        if box:
-            image = self.box.paint(image, color, width=5)
+        for character in self.characters:
+            image = character.paint(image, color)    # draw a dot at the word's center of mass.
 
         return image
 
 class Word:
 
-    def __init__(self, contour):
+    def __init__(self, characters=[]):
+        
+        self.characters = set(characters)
 
-        self.contour = contour
-        self.center = self.getCenterOfMass(contour)
+        for character in characters:
+            character.assignParentWord(self)
 
-        self.rect = cv2.minAreaRect(contour)    # rect = ((center_x,center_y),(width,height),angle)
-        self.points = self.rectToPoints(self.rect)
+    def registerChildCharacter(self, character):
+        
+        self.characters.add(character)
 
-        self.start, self.end = self.getEndPoints(self.points)
+    def paint(self, image, color=colors.YELLOW):
 
-        self.rightCandidates = []   # each element in the list will have the form [ WordInstance, distanceScore ]
-        self.leftCandidates = []    # candidates for 'going leftwards along the line', i.e. backwards.
-        self.rightLinks = []
-        self.leftLinks = []
-
-        self.parentLine = None      # this will eventually hold a reference to a Line instance.
-        self.isSeen = False         # this is a flag used in the depth-first search of a graph fragment.
-
-    def getCenterOfMass(self, contour):
-
-        moments = cv2.moments(contour)
-
-        centroidX = int( moments['m10'] / moments['m00'] )
-        centroidY = int( moments['m01'] / moments['m00'] )
-
-        return (centroidX, centroidY)
-
-    def rectToPoints(self, rect):
-
-        points = cv2.cv.BoxPoints(rect)             # Find four vertices of rectangle from above rect
-        points = numpy.int0(numpy.around(points))   # Round the values and make them integers
-        return points
-
-    def getEndPoints(self, points):
-
-        points  = sorted(points, key=lambda point: point[0]) # sort by x position.
-        left = sorted(points[:2], key=lambda point: point[1])  # [top-left, bottom-left]
-        right = sorted(points[2:], key=lambda point: point[1]) # [top-right, bottom-right]
-
-        start = Word.midpoint(left[0], left[1]) # midpoint of top-left and bottom-left
-        end = Word.midpoint(right[0], right[1]) # midpoint of top-right and bottom-right
-
-        return start, end
-
-    def getArea(self):
-        return cv2.contourArea(self.contour)
-
-    def selectCandidates(self):
-
-        if len(self.rightCandidates):
-            best = min(self.rightCandidates, key=lambda element: element[1])[0]
-            self.rightLinks.append(best)
-            best.leftLinks.append(self)
-
-        if len(self.leftCandidates):
-            best = min(self.leftCandidates, key=lambda element: element[1])[0]
-            self.leftLinks.append(best)
-            best.rightLinks.append(self)
-
-    def paint(self, image, color):
-
-        #image = g.Point(self.center).paint(image, colors.RED)    # draw a dot at the word's center of mass.
-
-        centerline = g.Line([self.start, self.end])
-        image = centerline.paint(image, color)
-
-        if len(self.rightLinks) is not None:
-            for word in self.rightLinks:
-                connector = g.Line([self.end, word.start])
-                image = connector.paint(image, color)
-        if len(self.leftLinks) is not None:
-            for word in self.leftLinks:
-                connector = g.Line([self.start, word.end])
-                image = connector.paint(image, color)
+        for character in self.characters:
+            image = character.paint(image, color)
+            
+            for neighbour in character.nearestNeighbours:
+                line = g.Line([character, neighbour])
+                image = line.paint(image, color)
 
         return image
+        
 
-    @staticmethod
-    def midpoint(start, end):
-
-        midX = float(start[0]+end[0]) / 2
-        midY = float(start[1]+end[1]) / 2
-
-        return (midX, midY)

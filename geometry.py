@@ -150,15 +150,6 @@ class Point:
 
         self.isPoint = True     # used to test instance type.
 
-    def projection(self, line, image=None):
-        # project self (a point) onto line (a line), and return a point descibing the result.
-
-        normal = Line([self], line.angle + 90)
-        #if image is not None:
-            #image = normal.paint(image, colors.RED)
-        point = normal.intersect(line)
-        return point
-
     def align(self):
         # return a new point instance where .x and .y are integers
 
@@ -207,20 +198,10 @@ class Point:
         return 2
 
     def __iter__(self):
-        class Iterator():
-            def __init__(self, source):
-                self.source = source
-                self.index = 0
-            def __iter__(self):
-                return self
-            def next(self):
-                if self.index >= len(self.source):
-                    raise StopIteration
-                else:
-                    self.index += 1
-                    return self.source[self.index-1]
 
-        return Iterator((self.x, self.y))
+        yield self.x
+        yield self.y
+        raise StopIteration
 
     def __add__(self, other):
         result = Point()
