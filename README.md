@@ -1,13 +1,13 @@
-structor
+cosc428-structor
 ========
 
-I had an out-of-copyright book that I wanted to read. I also wanted to make it easy 
-for other people to read it. Simple solution: scan each page, use OCR to convert
-it to text, then format it as an ebook. Except there were a whole pile of OCR transcription
-errors, and Tesseract wasn't very good at detecting and retaining the page structure.
-
-Enter python and openCV. I wrote a script that takes an image and uses computer vision 
-magick to determine the page's structure. So far, my script can detect and locate:
+I had an open-ended Computer Vision assignment to complete, and an out-of-copyright book that 
+I wanted to turn into an ebook. Conventional OCR engines like Tesseract weren't 
+able to accurately recognise the page structure, which led to many transcription errors. If I 
+could tell Tesseract to ignore certain regions (like images or repeated headers), then I could
+greatly reduce the number of errors in the resulting ebook. Thus: for my assignment, I wrote 
+a program that takes an image and uses computer vision magick to determine the page's structure. 
+So far, my program can detect and locate:
 
 * lines of text,
 * paragraphs,
